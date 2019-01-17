@@ -12,14 +12,14 @@
 #include <sr595.h>
 
 #define BASEPIN 100
-#define NBPINS 32
+#define NBPINS 16
 #define DATAPIN 0
 #define CLOCKPIN 1
 #define LATCHPIN 2
 
 #define MAX_UDP 1500
 #define BUFF 1024
-#define DATA_SIZE 2
+#define DATA_SIZE 4
 
 const uint8_t zero[8] = {1, 1, 1, 1, 1, 0, 1, 0};
 const uint8_t one[8] = {0, 0, 1, 1, 0, 0, 0, 0};
@@ -34,11 +34,12 @@ const uint8_t nine[8] = {0, 0, 1, 1, 1, 0, 1, 1};
 
 int fdp[2];
 int doing = 1;
+int reading = 0;
 
 void writeDigit(uint8_t range, const uint8_t* number) {
     int i;
     for(i=0; i<8; i++) digitalWrite(BASEPIN + range, number[i]);
-    for(i=0; i<8; i++) digitalWrite(BASEPIN + range + 2, number[i]);
+    //for(i=0; i<8; i++) digitalWrite(BASEPIN + range + 2, number[i]);
 }
 
 int8_t parseData(uint8_t range, uint16_t data) {
@@ -61,12 +62,19 @@ void* print(void* none) {
     int8_t res, pdata[2];
     uint16_t data;
     while(doing) {
+        while(!reading) ;
         res = read(fdp[0], &data, 2);
+        reading = 0;
+        if(data == 0) doing = 0;
         if(res != 2) perror("print.read");
+#ifdef DEBUG
         printf("print.read (read) : %d\n", data);
+#endif
         pdata[0] = parseData(0, data);
         pdata[1] = parseData(1, data);
-        printf("print.parseData (units) : %d (tens) : %d\n");
+#ifdef DEBUG
+        printf("print.parseData (units) : %d (tens) : %d\n", pdata[0], pdata[1]);
+#endif
         for(i=0; i<2; i++) {
             if(pdata[i] == 0) writeDigit(i, zero);
             else if(pdata[i] == 1) writeDigit(i, one);
@@ -86,7 +94,9 @@ void* print(void* none) {
 
 void* timer(void* arg) {
     uint16_t init = atoi((const char *) arg);
+#ifdef DEBUG
     printf("timer.atoi (init value) : %d\n", init); //test reception
+#endif
     struct timespec now;
     int res = clock_gettime(CLOCK_REALTIME, &now);
     if(res != 0) perror("timer.clock_gettime");
@@ -94,13 +104,17 @@ void* timer(void* arg) {
     uint16_t data;
     while(doing) {
         clock_gettime(CLOCK_REALTIME, &now);
-        data = init - (end - start);
+        data = init - (uint16_t)(end - start);
         if(end != now.tv_sec) {
-            res = write(fdp[1], &data, 2);
+            while(reading) ;
+            res = write(fdp[1], &data, 2); 
+            reading = 1;
+#ifdef DEBUG
             printf("timer.write (send) : %d\n", data); //test data sent
+#endif
             if(res != 2) perror("timer.write");
         }
-        if((uint16_t)(end - start) >= init) doing = 0;
+        if(data == 0) doing = 0;
         end = now.tv_sec;
     }
     return NULL;
@@ -147,6 +161,7 @@ int onReceived(int soc, uint8_t *data) {
     int res = recvfrom(soc, data, DATA_SIZE*sizeof(*data), 0, (struct sockaddr *) &address, &len);
     if(res<0) { perror("onReceived.recvfrom"); return -1; }
 
+#ifdef DEBUG
     char host[NI_MAXHOST], service[NI_MAXSERV];
     int resI = getnameinfo((struct sockaddr *) &address, len, host, NI_MAXHOST, service, NI_MAXSERV, NI_NUMERICSER
 V);
@@ -158,6 +173,7 @@ V);
 sendto");
     }
     else { perror("onReceived.getnameinfo"); return -1; }
+#endif
 
     return 0;
 }
@@ -167,7 +183,9 @@ int main (void) {
     if(socket == -1) perror("main.socket");
     pthread_t tid1, tid2;
 
+#ifdef DEBUG
     printf("main.socket : %d\n", socket); //test socket
+#endif
 
     wiringPiSetup() ;
     sr595Setup(BASEPIN, NBPINS, DATAPIN, CLOCKPIN, LATCHPIN);
@@ -177,26 +195,24 @@ int main (void) {
     if(res != 0) perror("main.pipe");
     
     uint8_t data[DATA_SIZE];
-    memset(&data, 0, sizeof(data));
     while(1) {
         doing = 1;
-        
+        memset(&data, 0, sizeof(data));        
+
         res = onReceived(socket, data);
         if(res != 0) perror("main.onReceived");
-        int i;
-        printf("main.onReceived :");
-        for(i=0; i<DATA_SIZE; i++) printf(" %d", data[i]); //test udp server
-        printf("\n");
 
-        res = pthread_create(&tid1,NULL,print,NULL);
+        res = pthread_create(&tid1, NULL, timer, (void *)(data));
         if(res != 0) perror("main.pthread_create");
-        res = pthread_create(&tid2,NULL,timer,(void *)(data));
+        res = pthread_create(&tid2, NULL, print, NULL);
         if(res != 0) perror("main.pthread_create");
         
         pthread_join(tid1,NULL);
         pthread_join(tid2,NULL);
 
-        printf("main.doing %d\n", doing);
+#ifdef DEBUG
+        printf("main.doing (finish) : %d\n", doing);
+#endif
     }
     
     return 0 ;
