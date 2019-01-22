@@ -61,6 +61,7 @@ int8_t parseData(uint8_t range, uint16_t data) {
 
 //printing the data sent from the timer
 void* print(void* none) {
+    //initialisation
     writeDigit(0, zero);
     writeDigit(1, zero);
     int i;
@@ -68,7 +69,7 @@ void* print(void* none) {
     uint16_t data;
     
     while(doing) {
-        
+        //read if the data is sent
         while(!reading) ;
         res = read(fdp[0], &data, 2);
         reading = 0;
@@ -76,13 +77,15 @@ void* print(void* none) {
         if(data == 0) doing = 0;
         if(res != 2) perror("print.read");
 #ifdef DEBUG
-        printf("print.read (read) : %d\n", data);
+        printf("print.read (read) : %d\n", data); //test pipe
 #endif
+        //parsing
         pdata[0] = parseData(0, data);
         pdata[1] = parseData(1, data);
 #ifdef DEBUG
-        printf("print.parseData (units) : %d (tens) : %d\n", pdata[0], pdata[1]);
+        printf("print.parseData (units) : %d (tens) : %d\n", pdata[0], pdata[1]); //test parse
 #endif
+        //writing the tens and units
         for(i=0; i<2; i++) {
             if(pdata[i] == 0) writeDigit(i, zero);
             else if(pdata[i] == 1) writeDigit(i, one);
@@ -106,24 +109,29 @@ void* timer(void* arg) {
 #ifdef DEBUG
     printf("timer.atoi (init value) : %d\n", init); //test reception
 #endif
+    //inisialisation
     struct timespec now;
     int res = clock_gettime(CLOCK_REALTIME, &now);
     if(res != 0) perror("timer.clock_gettime");
     time_t end = now.tv_sec, start = now.tv_sec;
     uint16_t data;
+    
     while(doing) {
         clock_gettime(CLOCK_REALTIME, &now);
         data = init - (uint16_t)(end - start);
         if(end != now.tv_sec) {
+            
+            //write and notice
             while(reading) ;
             res = write(fdp[1], &data, 2);
             reading = 1;
+
 #ifdef DEBUG
             printf("timer.write (send) : %d\n", data); //test data sent
 #endif
             if(res != 2) perror("timer.write");
         }
-        if(data == 0) doing = 0;
+        if(data < 0) doing = 0;
         end = now.tv_sec;
     }
     return NULL;
@@ -134,7 +142,7 @@ int UDPserver(char *service) {
     struct addrinfo precision, *result, *origin;
     int res;
     
-    /* build address structure */
+    //build address structure
     memset(&precision, 0, sizeof precision);
     precision.ai_family = AF_UNSPEC;
     precision.ai_socktype = SOCK_DGRAM;
@@ -145,19 +153,19 @@ int UDPserver(char *service) {
     for(p=origin, result=origin; p!=NULL; p=p->ai_next)
     if(p->ai_family == AF_INET6) { result = p; break; }
     
-    /* create socket */
+    //create socket
     int soc = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
     if(soc < 0) { perror("UDPserver.socket"); return -1; }
     
-    /* options  */
+    //options
     int vrai=1;
     if(setsockopt(soc, SOL_SOCKET, SO_REUSEADDR, &vrai,sizeof(vrai))<0) { perror("UDPserver.setsockopt (REUSEADDR)"); return -1; }
     
-    /* bind the address */
+    //bind the address
     res = bind(soc, result->ai_addr, result->ai_addrlen);
     if(res < 0) { perror("UDPserver.bind"); return -1; }
     
-    /* free info structure */
+    //free info structure
     freeaddrinfo(origin);
     
     return soc;
@@ -177,13 +185,31 @@ int onReceived(int soc, uint8_t *data) {
     
     if(resI == 0) {
         printf("Received %d bytes from %s:%s\n (udp) : %s\n", res, host, service, data); //test onReceived
-        char acn[32] ="recu frere\n";
-        if(sizeof(acn) != sendto(soc, acn, sizeof(acn), 0, (struct sockaddr *) &address, len)) perror("onReceived.sendto");
+        //char acn[32] ="recu frere\n";
+        //if(sizeof(acn) != sendto(soc, acn, sizeof(acn), 0, (struct sockaddr *) &address, len)) perror("onReceived.sendto");
     }
     else { perror("onReceived.getnameinfo"); return -1; }
 #endif
     
     return 0;
+}
+
+//closing udp socket
+int closeSocket(int soc) {
+    if(soc >= 0) {
+        //clear errors
+        int err = 1;
+        socklen_t len = sizeof(err);
+        if(-1 == getsockopt(soc, SOL_SOCKET, SO_ERROR, (char *)&err, &len)) { perror("closeSocket.getsockopt"); return -1; }
+        if(err) {
+            //terminate devivery
+            if(shutdown(soc, SHUT_RDWR) < 0) { perror("closeSocket.shutdown"); return -1; }
+            if(close(soc) < 0) { perror("closeSocket.close"); return -1; }
+            return 0;
+        }
+        else return -1;
+    }
+    else return -1;
 }
 
 int main (void) {
@@ -203,27 +229,30 @@ int main (void) {
     if(res != 0) perror("main.pipe");
     
     uint8_t data[DATA_SIZE];
-    while(1) {
-        doing = 1;
-        memset(&data, 0, sizeof(data));
-        
-        res = onReceived(socket, data);
-        if(res != 0) perror("main.onReceived");
-        
-        res = pthread_create(&tid1, NULL, timer, (void *)(data));
-        if(res != 0) perror("main.pthread_create");
-        res = pthread_create(&tid2, NULL, print, NULL);
-        if(res != 0) perror("main.pthread_create");
-        
-        pthread_join(tid1,NULL);
-        pthread_join(tid2,NULL);
-        
-        execlp("rm", "rm", "-r", "./webserver/controllers/*.json", NULL);
-        
+    memset(&data, 0, sizeof(data));
+    
+    res = onReceived(socket, data);
+    if(res != 0) perror("main.onReceived");
+    
+    res = closeSocket(socket);
+    if(res != 0) perror("main.closeSocket");
+    
+    res = pthread_create(&tid1, NULL, timer, (void *)(data));
+    if(res != 0) perror("main.pthread_create");
+    res = pthread_create(&tid2, NULL, print, NULL);
+    if(res != 0) perror("main.pthread_create");
+    
+    pthread_join(tid1,NULL);
+    pthread_join(tid2,NULL);
+    
+    res = close(fdp[0]);
+    if(res != 0) perror("main.closePipeRead");
+    res = close(fdp[1]);
+    if(res != 0) perror("main.closePipeWrite");
+    
 #ifdef DEBUG
-        printf("main.doing (finish) : %d\n", doing);
+    printf("main.doing (finish) : %d\n", doing);
 #endif
-    }
     
     return 0 ;
 }
